@@ -1,0 +1,6 @@
+[Global]
+IconName=speedometer
+
+[Event/limitReached]
+Name=OpenCode Go — 5-часовой лимит
+Comment=Использовано больше заданного порога

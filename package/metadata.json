@@ -1,0 +1,18 @@
+{
+    "KPlugin": {
+        "Id": "org.opencode.limits",
+        "Name": "OpenCode Go Limits",
+        "Description": "Показывает лимиты OpenCode Go (5 часов / неделя / месяц) прямо на панели или рабочем столе",
+        "Icon": "speedometer",
+        "Category": "System Information",
+        "License": "MIT",
+        "Version": "1.0.0",
+        "Authors": [
+            {
+                "Name": "opencode-go-limits-plasma contributors"
+            }
+        ]
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

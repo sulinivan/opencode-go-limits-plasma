@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+package/contents/code/usage.log
+package/contents/code/usage.tmp
+package/contents/code/notified
