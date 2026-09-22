@@ -27,7 +27,9 @@ PlasmoidItem {
     property string lastPayload: ""
     property string activeSource: ""
 
-    readonly property real worstPercent: Logic.worstPercent(root.usage)
+    // Процент 5-часового лимита — его показывает компактная версия на панели.
+    readonly property real rollingPercent: (root.usage && root.usage.rolling
+        && typeof root.usage.rolling.percent === "number") ? root.usage.rolling.percent : -1
 
     readonly property string backendScript: root.localPath(Qt.resolvedUrl("../code/backend.py"))
     readonly property string stateDir: root.backendScript.substring(0, root.backendScript.lastIndexOf("/") + 1)
@@ -184,7 +186,8 @@ PlasmoidItem {
 
         onClicked: root.expanded = !root.expanded
 
-        PlasmaComponents.ToolTip.text: Logic.TITLE + " · " + Logic.statusText(root.lastError, root.updatedAt)
+        PlasmaComponents.ToolTip.text: Logic.TITLE + " · " + Logic.WINDOW_TITLES.rolling + " · "
+            + Logic.statusText(root.lastError, root.updatedAt)
         PlasmaComponents.ToolTip.visible: containsMouse
 
         RowLayout {
@@ -207,8 +210,8 @@ PlasmoidItem {
             }
         }
 
-        // Процент самого загруженного из трёх лимитов.
-        readonly property real percent: root.worstPercent
+        // Процент 5-часового лимита: на панели показываем только его.
+        readonly property real percent: root.rollingPercent
     }
 
     fullRepresentation: Item {

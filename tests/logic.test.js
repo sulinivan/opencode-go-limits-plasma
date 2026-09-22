@@ -69,11 +69,6 @@ assert.match(
     /^Использовано 91% \(порог 85%\)\. сброс через 3 ч 0 мин · \d\d:\d\d\. Отключить можно в настройках\.$/
 );
 
-// --- самый загруженный лимит ------------------------------------------------
-assert.strictEqual(logic.worstPercent(null), -1);
-assert.strictEqual(logic.worstPercent({ rolling: { percent: 10 }, weekly: { percent: 70 }, monthly: { percent: 30 } }), 70);
-assert.strictEqual(logic.worstPercent({ monthly: { percent: 1 } }), 1);
-
 // --- разбор ответа backend --------------------------------------------------
 const payload = '{"ok":true,"time":"12:00:00","usage":{"rolling":{"percent":1,"status":"ok","resetsAt":""}}}';
 assert.strictEqual(JSON.stringify(logic.parseBackendJson(payload + "\n")), JSON.stringify(JSON.parse(payload)));

@@ -14,7 +14,6 @@ var WINDOW_TITLES = {
     "weekly": "неделя",
     "monthly": "месяц"
 }
-var WINDOW_ORDER = ["rolling", "weekly", "monthly"]
 
 // "ok" | "warn" | "crit" | "unknown"
 function colorTier(percent) {
@@ -110,20 +109,6 @@ function statusText(error, updatedAt) {
 function notifyBody(item, threshold, nowMs) {
     return "Использовано " + Math.round(item.percent) + "% (порог " + threshold + "%). "
         + formatReset(item.resetsAt, nowMs) + ". Отключить можно в настройках."
-}
-
-// Самый "загруженный" из трёх лимитов (-1, если данных нет). Нужен компактной
-// версии виджета на панели.
-function worstPercent(usage) {
-    if (!usage)
-        return -1
-    var worst = -1
-    for (var i = 0; i < WINDOW_ORDER.length; i++) {
-        var item = usage[WINDOW_ORDER[i]]
-        if (item && typeof item.percent === "number" && item.percent > worst)
-            worst = item.percent
-    }
-    return worst
 }
 
 // Движок "executable" отдаёт вывод процесса в поле stdout.
