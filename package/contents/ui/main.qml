@@ -31,6 +31,10 @@ PlasmoidItem {
     readonly property real rollingPercent: (root.usage && root.usage.rolling
         && typeof root.usage.rolling.percent === "number") ? root.usage.rolling.percent : -1
 
+    // Процент месячного лимита — по нему компактная версия выбирает цвет.
+    readonly property real monthlyPercent: (root.usage && root.usage.monthly
+        && typeof root.usage.monthly.percent === "number") ? root.usage.monthly.percent : -1
+
     readonly property string backendScript: root.localPath(Qt.resolvedUrl("../code/backend.py"))
     readonly property string stateDir: root.backendScript.substring(0, root.backendScript.lastIndexOf("/") + 1)
     readonly property string usageLog: root.stateDir + "usage.log"
@@ -198,20 +202,17 @@ PlasmoidItem {
 
             Kirigami.Icon {
                 source: Plasmoid.icon || "speedometer"
-                color: root.tierColor(Logic.colorTier(compact.percent))
+                color: root.tierColor(Logic.colorTier(root.monthlyPercent))
                 Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
                 Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
             }
 
             PlasmaComponents.Label {
-                text: Logic.percentText(compact.percent)
-                color: root.tierColor(Logic.colorTier(compact.percent))
+                text: Logic.percentText(root.rollingPercent)
+                color: root.tierColor(Logic.colorTier(root.monthlyPercent))
                 font: Kirigami.Theme.smallFont
             }
         }
-
-        // Процент 5-часового лимита: на панели показываем только его.
-        readonly property real percent: root.rollingPercent
     }
 
     fullRepresentation: Item {
