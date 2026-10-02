@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Проверки backend.py: нормализация, тексты ошибок, ключ, журнал, уведомления.
+"""Проверки backend.py: нормализация, тексты ошибок, вход, журнал, уведомления.
 
 Запуск:  python3 tests/test_backend.py
 """
@@ -10,6 +10,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -32,14 +33,21 @@ def load_backend():
 backend = load_backend()
 
 
-FIXTURE = {
-    "usage": {
-        "rolling": {"percent": 12.6, "status": "active", "resetsAt": "2026-01-01T05:00:00Z"},
-        "weekly": {"percent": 61, "status": "active", "resetsAt": "2026-01-07T00:00:00Z"},
-        "monthly": {"percent": 88.5, "status": "exceeded", "resetsAt": "2026-02-01T00:00:00Z"},
-    },
-    "unrelated": "ignored",
-}
+def meters(five_hour: dict | None = None, week: dict | None = None, month: dict | None = None) -> dict:
+    payload: dict = {"access": {"meters": {}}}
+    for name, item in (("fiveHour", five_hour), ("week", week), ("month", month)):
+        if item is not None:
+            payload["access"]["meters"][name] = item
+    return payload
+
+
+FIXTURE = meters(
+    {"usedMicroCents": "126000000", "limitMicroCents": "1000000000", "resetsAt": "2026-01-01T05:00:00.000Z"},
+    {"usedMicroCents": "610000000", "limitMicroCents": "1000000000", "resetsAt": "2026-01-07T00:00:00.000Z"},
+    {"usedMicroCents": "885000000", "limitMicroCents": "1000000000", "resetsAt": "2026-02-01T00:00:00.000Z"},
+)
+FIXTURE["product"] = "go"
+FIXTURE["unrelated"] = "ignored"
 
 
 class IsolatedState(unittest.TestCase):
@@ -67,28 +75,45 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(sorted(result), ["monthly", "rolling", "weekly"])
         self.assertNotIn("unrelated", result)
 
-    def test_casts_percent_to_float(self):
-        payload = {"usage": {"rolling": {"percent": "42.5", "status": "ok", "resetsAt": "x"}}}
-        self.assertEqual(backend.normalize(payload)["rolling"]["percent"], 42.5)
+    def test_computes_percent_from_micro_cents(self):
+        result = backend.normalize(FIXTURE)
+        self.assertAlmostEqual(result["rolling"]["percent"], 12.6)
+        self.assertAlmostEqual(result["weekly"]["percent"], 61.0)
+        self.assertAlmostEqual(result["monthly"]["percent"], 88.5)
 
-    def test_broken_percent_becomes_zero(self):
-        payload = {"usage": {"rolling": {"percent": "мусор", "status": "ok"}}}
-        item = backend.normalize(payload)["rolling"]
-        self.assertEqual(item["percent"], 0.0)
-        self.assertEqual(item["resetsAt"], "")
+    def test_exhausted_window_is_marked_exceeded(self):
+        result = backend.normalize(meters(week={"usedMicroCents": "1000", "limitMicroCents": "1000"}))
+        self.assertEqual(result["weekly"]["status"], "exceeded")
 
-    def test_window_without_usage_is_skipped(self):
-        self.assertNotIn("weekly", backend.normalize({"usage": {"rolling": {}}}))
+    def test_active_window_is_not_marked_exceeded(self):
+        self.assertEqual(backend.normalize(FIXTURE)["weekly"]["status"], "active")
+
+    def test_missing_resets_at_becomes_empty(self):
+        result = backend.normalize(meters(month={"usedMicroCents": "1", "limitMicroCents": "2"}))
+        self.assertEqual(result["monthly"]["resetsAt"], "")
+
+    def test_broken_amounts_become_zero(self):
+        result = backend.normalize(meters(five_hour={"usedMicroCents": "мусор", "limitMicroCents": None}))
+        self.assertEqual(result["rolling"]["percent"], 0.0)
+        self.assertEqual(result["rolling"]["status"], "active")
+
+    def test_window_without_meter_is_skipped(self):
+        self.assertNotIn("weekly", backend.normalize(meters(five_hour={"usedMicroCents": "1", "limitMicroCents": "2"})))
 
     def test_broken_payload_raises(self):
-        for payload in ({}, {"usage": None}, [], "nope", {"usage": []}):
+        for payload in ({}, {"access": None}, [], "nope", {"access": {"meters": []}}):
             with self.assertRaises(backend.UsageError):
                 backend.normalize(payload)
+
+    def test_account_without_go_plan_is_explained(self):
+        with self.assertRaises(backend.UsageError) as ctx:
+            backend.normalize({"product": "zen"})
+        self.assertEqual(str(ctx.exception), backend.MSG_NO_GO)
 
 
 class ErrorTextTests(unittest.TestCase):
     def test_401(self):
-        self.assertEqual(backend.message_for_http_status(401), "ключ отклонён (401) — проверьте auth.json")
+        self.assertIn("401", backend.message_for_http_status(401))
 
     def test_404(self):
         self.assertIn("404", backend.message_for_http_status(404))
@@ -97,42 +122,57 @@ class ErrorTextTests(unittest.TestCase):
         self.assertIn("500", backend.message_for_http_status(500))
 
 
-class ApiKeyTests(unittest.TestCase):
-    def test_missing_auth_file(self):
-        with self.assertRaises(backend.UsageError) as ctx:
-            backend.load_api_key(Path("/nonexistent/auth.json"))
-        self.assertEqual(str(ctx.exception), backend.MSG_NO_AUTH)
+class CredentialsTests(unittest.TestCase):
+    """Вход берётся из opencode.db, а не из auth.json."""
 
-    def write_auth(self, directory: str, document: object) -> Path:
-        path = Path(directory) / "auth.json"
-        path.write_text(json.dumps(document), encoding="utf-8")
+    def write_db(self, directory: str, token: str | None = "tok", org: str | None = "wrk_1") -> Path:
+        path = Path(directory) / "opencode.db"
+        connection = sqlite3.connect(str(path))
+        connection.execute("create table account (id text, url text, access_token text, token_expiry integer)")
+        connection.execute(
+            "insert into account values ('acc_1', 'https://opencode.ai/console', ?, 4102444800000)",
+            (token,),
+        )
+        connection.execute("create table account_state (id integer, active_account_id text, active_org_id text)")
+        connection.execute("insert into account_state values (1, 'acc_1', ?)", (org,))
+        connection.commit()
+        connection.close()
         return path
 
-    def test_reads_go_key(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = self.write_auth(tmp, {"opencode-go": {"type": "api", "key": "secret-go"}})
-            self.assertEqual(backend.load_api_key(path), "secret-go")
+    def test_missing_database(self):
+        with self.assertRaises(backend.UsageError) as ctx:
+            backend.load_credentials(Path("/nonexistent/opencode.db"))
+        self.assertEqual(str(ctx.exception), backend.MSG_NO_AUTH)
 
-    def test_zen_only_key_is_explained(self):
+    def test_reads_token_org_and_base(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = self.write_auth(tmp, {"opencode": {"key": "secret-zen"}})
+            token, org, base, expiry = backend.load_credentials(self.write_db(tmp))
+        self.assertEqual(token, "tok")
+        self.assertEqual(org, "wrk_1")
+        self.assertEqual(base, "https://opencode.ai/console")
+        self.assertEqual(expiry, 4102444800000)
+
+    def test_missing_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.write_db(tmp, token=None)
             with self.assertRaises(backend.UsageError) as ctx:
-                backend.load_api_key(path)
-            self.assertEqual(str(ctx.exception), backend.MSG_ZEN_ONLY)
+                backend.load_credentials(path)
+        self.assertEqual(str(ctx.exception), backend.MSG_NO_TOKEN)
 
-    def test_no_key_at_all(self):
+    def test_missing_org(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = self.write_auth(tmp, {"something": {"key": "x"}})
+            path = self.write_db(tmp, org=None)
             with self.assertRaises(backend.UsageError) as ctx:
-                backend.load_api_key(path)
-            self.assertEqual(str(ctx.exception), backend.MSG_NO_KEY)
+                backend.load_credentials(path)
+        self.assertEqual(str(ctx.exception), backend.MSG_NO_ORG)
 
-    def test_broken_json(self):
+    def test_database_without_tables(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "auth.json"
-            path.write_text("{not json", encoding="utf-8")
-            with self.assertRaises(backend.UsageError):
-                backend.load_api_key(path)
+            path = Path(tmp) / "opencode.db"
+            sqlite3.connect(str(path)).close()
+            with self.assertRaises(backend.UsageError) as ctx:
+                backend.load_credentials(path)
+        self.assertIn("opencode.db", str(ctx.exception))
 
 
 class SharedLogTests(IsolatedState):
@@ -203,10 +243,10 @@ class CliTests(IsolatedState):
         self.assertIn("time", document)
 
     def test_error_is_reported_as_json_not_traceback(self):
-        code, document = self.run_main([], backend.UsageError(backend.MSG_NO_KEY))
+        code, document = self.run_main([], backend.UsageError(backend.MSG_NO_TOKEN))
         self.assertEqual(code, 0)
         self.assertFalse(document["ok"])
-        self.assertEqual(document["error"], backend.MSG_NO_KEY)
+        self.assertEqual(document["error"], backend.MSG_NO_TOKEN)
 
     def test_threshold_below_is_not_notified(self):
         _, document = self.run_main(["--threshold", "85"], self.sample_usage(84.9))

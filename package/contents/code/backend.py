@@ -2,16 +2,21 @@
 """Источник данных для плазмоида OpenCode Go Limits.
 
 Скрипт делает четыре вещи:
-  1. находит API-ключ `opencode-go` в auth.json установленного opencode;
-  2. запрашивает у сервиса статистику лимитов (5 часов / неделя / месяц);
+  1. достаёт из базы установленного opencode токен входа и организацию;
+  2. запрашивает у консоли OpenCode состояние лимитов Go (5 часов / неделя / месяц);
   3. печатает одну строку JSON в stdout и кладёт её же в общий журнал usage.log,
      из которого читают все остальные экземпляры виджета (панель + рабочий стол);
   4. решает, кому отправлять уведомление о превышении порога — ровно одному
      экземпляру на окно сброса (см. --threshold).
 
+Лимиты Go живут в консоли OpenCode (opencode.ai/console), а не в Zen-провайдере:
+эндпоинт /zen/go/v1/usage больше не существует. Поэтому ключ подписки `opencode-go`
+из auth.json для этого запроса не годится — нужен токен входа, который opencode
+обновляет сам при каждом запуске.
+
 Используется только стандартная библиотека Python 3 (никаких pip-пакетов).
 
-Запуск вручную (для проверки ключа и связи с сервисом):
+Запуск вручную (для проверки входа и связи с консолью):
 
     python3 backend.py --test
 """
@@ -22,78 +27,112 @@ import argparse
 import fcntl
 import json
 import os
+import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-API_URL = "https://opencode.ai/zen/go/v1/usage"
 USER_AGENT = "opencode-go-limits-plasma/1.0"
 TIMEOUT_SECONDS = 20
 
 # Ключи окон лимитов: порядок совпадает с порядком полос в виджете.
 WINDOWS = ("rolling", "weekly", "monthly")
 
+# Как консоль называет каждое окно в ответе.
+METERS = {"rolling": "fiveHour", "weekly": "week", "monthly": "month"}
+
 # Общий журнал и маркер уведомлений лежат рядом со скриптом, внутри пакета
 # виджета: так путь не зависит от $HOME и не требует переменных окружения.
 STATE_DIR = Path(__file__).resolve().parent
 
 MSG_NO_AUTH = "OpenCode не настроен. Установите opencode и войдите: opencode auth login"
-MSG_NO_KEY = "Нужна подписка OpenCode Go: ключ opencode-go не найден в auth.json"
-MSG_ZEN_ONLY = "Нужна подписка OpenCode Go: найден только ключ Zen, а лимиты доступны на тарифе Go"
-MSG_BAD_RESPONSE = "неожиданный ответ API"
+MSG_NO_TOKEN = "opencode не вошёл в аккаунт: нет токена в opencode.db — запустите opencode"
+MSG_NO_ORG = "у аккаунта opencode нет организации — проверьте workspace в консоли"
+MSG_NO_GO = "Нужна подписка OpenCode Go: аккаунт без тарифа Go"
+MSG_TOKEN_EXPIRED = "Токен входа opencode истёк — запустите opencode, чтобы он обновился"
+MSG_BAD_RESPONSE = "неожиданный ответ консоли"
 
 
 class UsageError(Exception):
     """Ошибка, текст которой показывается пользователю как есть."""
 
 
-def auth_file() -> Path:
-    """Путь к auth.json пользователя (тот же, что использует opencode)."""
-    return Path.home() / ".local" / "share" / "opencode" / "auth.json"
+def database_path() -> Path:
+    """База данных установленного opencode (там лежит токен входа)."""
+    return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 
 
-def load_api_key(path: Path | None = None) -> str:
-    """Достаёт ключ подписки Go из auth.json."""
-    source = path or auth_file()
+def database_file(path: Path | None = None) -> Path:
+    source = path or database_path()
     if not source.is_file():
         raise UsageError(MSG_NO_AUTH)
+    return source
+
+
+def _text(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _amount(value: object) -> int:
+    """Микроценты приходят строками; мусор считаем нулём."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def load_credentials(path: Path | None = None) -> tuple[str, str, str, int]:
+    """Возвращает (токен, организация, база консоли, токен истекает в мс)."""
+    try:
+        connection = sqlite3.connect(str(database_file(path)))
+    except sqlite3.Error as exc:
+        raise UsageError(f"не удалось открыть opencode.db: {exc}") from exc
 
     try:
-        document = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise UsageError(f"не удалось прочитать auth.json: {exc}") from exc
+        account = connection.execute(
+            "select url, access_token, token_expiry from account"
+        ).fetchone()
+        org = connection.execute(
+            "select active_org_id from account_state"
+        ).fetchone()
+    except sqlite3.Error as exc:
+        raise UsageError(f"не удалось прочитать opencode.db: {exc}") from exc
+    finally:
+        connection.close()
 
-    if not isinstance(document, dict):
-        raise UsageError(MSG_NO_KEY)
+    if not account or not _text(account[1]):
+        raise UsageError(MSG_NO_TOKEN)
+    if not org or not _text(org[0]):
+        raise UsageError(MSG_NO_ORG)
 
-    entry = document.get("opencode-go")
-    if isinstance(entry, dict) and entry.get("key"):
-        return str(entry["key"])
-
-    zen = document.get("opencode")
-    if isinstance(zen, dict) and zen.get("key"):
-        raise UsageError(MSG_ZEN_ONLY)
-
-    raise UsageError(MSG_NO_KEY)
+    return _text(account[1]), _text(org[0]), _text(account[0]).rstrip("/"), _amount(account[2])
 
 
 def message_for_http_status(code: int) -> str:
-    """Человеческое объяснение кода ответа сервиса."""
+    """Человеческое объяснение кода ответа консоли."""
     if code == 401:
-        return "ключ отклонён (401) — проверьте auth.json"
+        return "токен входа отклонён (401) — запустите opencode, чтобы он обновился"
     if code == 404:
-        return "сервис лимитов недоступен (404) — возможно, изменился API"
-    return f"сервис лимитов ответил ошибкой {code}"
+        return "консоль не знает эндпоинт лимитов (404) — возможно, изменился API"
+    if code == 400:
+        return "консоль отклонила запрос (400) — проверьте организацию в opencode"
+    return f"консоль ответила ошибкой {code}"
 
 
-def fetch_usage(key: str, url: str = API_URL, timeout: int = TIMEOUT_SECONDS) -> dict:
-    """GET /zen/go/v1/usage с ключом в заголовке Authorization."""
+def fetch_status(
+    token: str,
+    org: str,
+    base: str = "https://opencode.ai/console",
+    timeout: int = TIMEOUT_SECONDS,
+) -> dict:
+    """GET <console>/api/go/status с токеном входа и заголовком x-org-id."""
     request = urllib.request.Request(
-        url,
+        base + "/api/go/status",
         headers={
-            "Authorization": "Bearer " + key,
+            "Authorization": "Bearer " + token,
+            "x-org-id": org,
             "User-Agent": USER_AGENT,
             "Accept": "application/json",
         },
@@ -104,39 +143,51 @@ def fetch_usage(key: str, url: str = API_URL, timeout: int = TIMEOUT_SECONDS) ->
     except urllib.error.HTTPError as exc:
         raise UsageError(message_for_http_status(exc.code)) from exc
     except urllib.error.URLError as exc:
-        raise UsageError(f"нет связи с сервисом лимитов: {exc.reason}") from exc
+        raise UsageError(f"нет связи с консолью: {exc.reason}") from exc
     except TimeoutError as exc:
-        raise UsageError("таймаут запроса к сервису лимитов") from exc
+        raise UsageError("таймаут запроса к консоли") from exc
     except ValueError as exc:
         raise UsageError(MSG_BAD_RESPONSE) from exc
 
 
 def normalize(payload: object) -> dict:
     """Оставляет только нужные поля и приводит типы к удобным для QML."""
-    usage = payload.get("usage") if isinstance(payload, dict) else None
-    if not isinstance(usage, dict):
+    access = payload.get("access") if isinstance(payload, dict) else None
+    meters = access.get("meters") if isinstance(access, dict) else None
+    if not isinstance(meters, dict):
+        if isinstance(payload, dict) and payload.get("product") not in ("go", "go-plus"):
+            raise UsageError(MSG_NO_GO)
         raise UsageError(MSG_BAD_RESPONSE)
 
     result: dict[str, dict] = {}
     for name in WINDOWS:
-        item = usage.get(name)
-        if not isinstance(item, dict):
+        meter = meters.get(METERS[name])
+        if not isinstance(meter, dict):
             continue
-        try:
-            percent = float(item.get("percent") or 0)
-        except (TypeError, ValueError):
-            percent = 0.0
+        used = _amount(meter.get("usedMicroCents"))
+        limit = _amount(meter.get("limitMicroCents"))
+        percent = used / limit * 100 if limit > 0 else 0.0
         result[name] = {
             "percent": percent,
-            "status": str(item.get("status") or ""),
-            "resetsAt": str(item.get("resetsAt") or ""),
+            "status": "exceeded" if percent >= 100 else "active",
+            "resetsAt": _text(meter.get("resetsAt")),
         }
     return result
 
 
 def collect() -> dict:
-    """Полный цикл: ключ -> запрос -> нормализация."""
-    return normalize(fetch_usage(load_api_key()))
+    """Полный цикл: вход -> запрос -> нормализация."""
+    token, org, base, expiry = load_credentials()
+    # ponytail: токен не обновляем сами — opencode обновляет его при каждом
+    # запуске, а писать в его базу из виджета опасно. Протухший токен даёт
+    # 401; если понадобится свой refresh через /console/auth/device/token,
+    # это +15 строк в load_credentials.
+    if expiry and expiry <= time.time() * 1000:
+        raise UsageError(MSG_TOKEN_EXPIRED)
+    payload = fetch_status(token, org, base)
+    if isinstance(payload, dict) and payload.get("product") not in ("go", "go-plus"):
+        raise UsageError(MSG_NO_GO)
+    return normalize(payload)
 
 
 def publish(document: dict) -> None:
@@ -153,7 +204,7 @@ def publish(document: dict) -> None:
 def window_key(resets_at: str, threshold: int) -> str:
     """Ключ окна сброса для уведомления.
 
-    Сервис отдаёт resetsAt с дрейфом в долях секунды (10:56:48.051, 10:56:48.845),
+    Консоль отдаёт resetsAt с дрейфом в долях секунды (10:56:48.051, 10:56:48.845),
     поэтому сравниваем только до минут: иначе уведомление повторялось бы при
     каждом опросе.
     """
@@ -180,7 +231,7 @@ def claim(key: str) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Лимиты OpenCode Go для плазмоида")
-    parser.add_argument("--test", action="store_true", help="проверить ключ и показать лимиты в читаемом виде")
+    parser.add_argument("--test", action="store_true", help="проверить вход и показать лимиты в читаемом виде")
     parser.add_argument(
         "--threshold",
         type=int,
@@ -199,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         for name in WINDOWS:
             item = usage.get(name)
             if item:
-                print(f"{name:<8} {item['percent']:>5.0f}%  status={item['status']:<8} resets {item['resetsAt']}")
+                print(f"{name:<8} {item['percent']:>5.0f}%  status={item['status']:<8} resets {item['resetsAt'] or '—'}")
         return 0
 
     document: dict = {"time": time.strftime("%H:%M:%S")}

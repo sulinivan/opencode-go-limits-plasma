@@ -25,8 +25,10 @@ KDE Plasma или на рабочем столе — без браузера и 
 - KDE Plasma 6 (проверено на 6.6.4)
 - `python3` (только стандартная библиотека, никаких pip-пакетов)
 - `tail` из coreutils (есть в любой системе; используется для чтения общего журнала)
-- Авторизованный `opencode`: ключ `opencode-go` должен лежать в
-  `~/.local/share/opencode/auth.json` (вход выполняется командой `opencode auth login`)
+- Авторизованный `opencode`: выполнен вход (`opencode auth login`), в
+  `~/.local/share/opencode/opencode.db` есть токен входа и организация.
+  Лимиты виджет берёт из консоли OpenCode, поэтому ключ `opencode-go` из
+  `auth.json` не используется.
 
 ## Установка (без root)
 
@@ -51,9 +53,9 @@ KDE Plasma или на рабочем столе — без браузера и 
 ## Как это работает
 
 ```
-любой экземпляр ──раз в N минут──> backend.py ──HTTPS──> opencode.ai/zen/go/v1/usage
+любой экземпляр ──раз в N минут──> backend.py ──HTTPS──> opencode.ai/console/api/go/status
                                         │
-                                        ├─ читает auth.json
+                                        ├─ читает токен и организацию из opencode.db
                                         ├─ пишет строку JSON в общий журнал usage.log
                                         └─ решает, кому слать уведомление (--threshold)
 
@@ -66,7 +68,7 @@ KDE Plasma или на рабочем столе — без браузера и 
 экземпляр, у которого сработал таймер (у каждого свой интервал).
 
 - `package/contents/ui/main.qml` — виджет: таймеры, вызов backend, чтение журнала, уведомления.
-- `package/contents/code/backend.py` — ключ, сеть, нормализация ответа, журнал, уведомления, тексты ошибок.
+- `package/contents/code/backend.py` — вход из `opencode.db`, сеть, нормализация ответа, журнал, уведомления, тексты ошибок.
 - `package/contents/code/logic.js` — чистая логика: пороги цвета, отсчёт, тексты, разбор JSON.
 - `package/contents/ui/UsageBar.qml` — одна полоса прогресса.
 - `package/contents/ui/configGeneral.qml` + `contents/config/main.xml` — настройки.
@@ -94,7 +96,7 @@ KDE Plasma или на рабочем столе — без браузера и 
 
 ## Проверка работоспособности
 
-Быстрая проверка без виджета — видно, что ключ найден и сервис отвечает:
+Быстрая проверка без виджета — видно, что вход найден и консоль отвечает:
 
 ```bash
 python3 package/contents/code/backend.py --test
@@ -127,9 +129,13 @@ plasmashell --replace &
 
 | Симптом | Что делать |
 |---|---|
-| `ошибка: ключ отклонён (401) — проверьте auth.json` | ключ недействителен: `opencode auth login` |
-| `ошибка: сервис лимитов недоступен (404)` | изменился API, нужно обновить `backend.py` |
-| `ошибка: Нужна подписка OpenCode Go: ключ opencode-go не найден` | в `auth.json` нет записи `opencode-go` |
+| `ошибка: токен входа отклонён (401)` | запустите `opencode`, чтобы он обновил токен |
+| `ошибка: консоль не знает эндпоинт лимитов (404)` | изменился API, нужно обновить `backend.py` |
+| `ошибка: OpenCode не настроен` | не установлен opencode или нет `opencode.db` |
+| `ошибка: opencode не вошёл в аккаунт: нет токена` | `opencode auth login` |
+| `ошибка: у аккаунта opencode нет организации` | проверьте workspace в консоли |
+| `ошибка: Нужна подписка OpenCode Go: аккаунт без тарифа Go` | оформите подписку на opencode.ai/go |
+| `ошибка: Токен входа opencode истёк` | запустите `opencode`, чтобы он обновил токен |
 | `ошибка: backend.py не ответил вовремя` | нет сети или запрос длится дольше 30 с |
 | Виджет есть, но показывает «—» | запустите `backend.py --test` и посмотрите текст ошибки |
 | Второй виджет не обновляется | проверьте, что оба виджета одной версии: `kpackagetool6 --type Plasma/Applet --list` |
@@ -184,7 +190,7 @@ CPU plasmashell (45 с):                  0.067% без виджетов / 0.089
 | KDE Plasma / `plasmashell` | 6.x | GPL-2.0-or-later | среда выполнения виджета |
 | Qt 6 (QtQuick, QML) | 6.x | LGPL-3.0 / GPL | графика и JS-движок |
 | KDE Frameworks 6 (Kirigami, KNotification, Plasma5Support) | 6.x | LGPL-2.1-or-later | UI-компоненты, уведомления, запуск backend |
-| Python 3 + стандартная библиотека | 3.x | PSF-2.0 | `backend.py` (`json`, `urllib`, `fcntl`) |
+| Python 3 + стандартная библиотека | 3.x | PSF-2.0 | `backend.py` (`json`, `urllib`, `sqlite3`, `fcntl`) |
 | coreutils (`tail`) | 9.x | GPL-3.0-or-later | чтение общего журнала |
 | Node.js | 24.x | MIT | только для `tests/logic.test.js` (не нужен для работы) |
 
