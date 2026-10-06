@@ -3,7 +3,8 @@
 
 Скрипт делает четыре вещи:
   1. достаёт из базы установленного opencode токен входа и организацию;
-  2. запрашивает у консоли OpenCode состояние лимитов Go (5 часов / неделя / месяц);
+  2. запрашивает у консоли OpenCode состояние лимитов Go (5 часов / неделя / месяц)
+     и дневной расход Go с полуночи (норма дня = лимит месяца / 31);
   3. печатает одну строку JSON в stdout и кладёт её же в общий журнал usage.log,
      из которого читают все остальные экземпляры виджета (панель + рабочий стол);
   4. решает, кому отправлять уведомление о превышении порога — ровно одному
@@ -24,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import fcntl
 import json
 import os
@@ -31,8 +33,12 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# Не засоряем пакет виджета кэшем байт-кода.
+sys.dont_write_bytecode = True
 
 USER_AGENT = "opencode-go-limits-plasma/1.0"
 TIMEOUT_SECONDS = 20
@@ -42,6 +48,11 @@ WINDOWS = ("rolling", "weekly", "monthly")
 
 # Как консоль называет каждое окно в ответе.
 METERS = {"rolling": "fiveHour", "weekly": "week", "monthly": "month"}
+
+# Дневная норма: месячный лимит, поделённый на 31 день. Потраченное берётся
+# с сервера (/api/usage/models с полуночи, только провайдер opencode-go) —
+# локального счёта дней нет, все ПК видят одно и то же число.
+DAILY_DIVISOR = 31
 
 # Общий журнал и маркер уведомлений лежат рядом со скриптом, внутри пакета
 # виджета: так путь не зависит от $HOME и не требует переменных окружения.
@@ -175,6 +186,75 @@ def normalize(payload: object) -> dict:
     return result
 
 
+def midnight_iso() -> str:
+    """Ближайшая полночь в локальном ISO: сброс дневного окна."""
+    now = time.localtime()
+    midnight = time.mktime((now.tm_year, now.tm_mon, now.tm_mday + 1, 0, 0, 0, 0, 0, -1))
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(midnight))
+
+
+def midnight_utc_iso() -> str:
+    """Местная полночь в UTC ISO: начало сегодняшнего дня для консоли."""
+    local_midnight = datetime.datetime.now().astimezone().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return local_midnight.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def fetch_daily_spend(
+    token: str,
+    org: str,
+    base: str,
+    month_limit: int,
+    timeout: int = TIMEOUT_SECONDS,
+) -> dict:
+    """Дневной расход Go с сервера: сумма затрат моделей opencode-go с полуночи.
+
+    Никакого локального счёта дней — все ПК видят одно и то же число.
+    Процент от дневной нормы (лимит месяца / 31) не ограничен сверху:
+    перерасход показывается как есть (137%, 200%, ...).
+    """
+    query = urllib.parse.urlencode(
+        {"since": midnight_utc_iso(), "pageSize": 100}  # моделей за день — единицы
+    )
+    request = urllib.request.Request(
+        base + "/api/usage/models?" + query,
+        headers={
+            "Authorization": "Bearer " + token,
+            "x-org-id": org,
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise UsageError(message_for_http_status(exc.code)) from exc
+    except urllib.error.URLError as exc:
+        raise UsageError(f"нет связи с консолью: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise UsageError("таймаут запроса к консоли") from exc
+    except ValueError as exc:
+        raise UsageError(MSG_BAD_RESPONSE) from exc
+
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise UsageError(MSG_BAD_RESPONSE)
+    spent = sum(
+        _amount(item.get("totalCostMicroCents"))
+        for item in items
+        if isinstance(item, dict) and item.get("provider") == "opencode-go"
+    )
+    allowance = month_limit / DAILY_DIVISOR if month_limit > 0 else 0
+    percent = spent / allowance * 100 if allowance > 0 else 0.0
+    return {
+        "percent": percent,
+        "status": "exceeded" if percent >= 100 else "active",
+        "resetsAt": midnight_iso(),
+    }
+
+
 def collect() -> dict:
     """Полный цикл: вход -> запрос -> нормализация."""
     token, org, base, expiry = load_credentials()
@@ -187,7 +267,15 @@ def collect() -> dict:
     payload = fetch_status(token, org, base)
     if isinstance(payload, dict) and payload.get("product") not in ("go", "go-plus"):
         raise UsageError(MSG_NO_GO)
-    return normalize(payload)
+    usage = normalize(payload)
+    month_meter = payload.get("access", {}).get("meters", {}).get("month", {})
+    try:
+        usage["daily"] = fetch_daily_spend(
+            token, org, base, _amount(month_meter.get("limitMicroCents"))
+        )
+    except UsageError:
+        pass  # дневное окно необязательно: остальные три покажем без него
+    return usage
 
 
 def publish(document: dict) -> None:
@@ -247,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         except UsageError as exc:
             print("FAIL: " + str(exc))
             return 1
-        for name in WINDOWS:
+        for name in ("rolling", "daily", "weekly", "monthly"):
             item = usage.get(name)
             if item:
                 print(f"{name:<8} {item['percent']:>5.0f}%  status={item['status']:<8} resets {item['resetsAt'] or '—'}")

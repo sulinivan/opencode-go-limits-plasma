@@ -11,6 +11,7 @@ var TITLE = "OpenCode Go"
 
 var WINDOW_TITLES = {
     "rolling": "5 часов",
+    "daily": "день",
     "weekly": "неделя",
     "monthly": "месяц"
 }

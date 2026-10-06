@@ -10,10 +10,10 @@ import "../code/logic.js" as Logic
 
 // Виджет лимитов OpenCode Go.
 //
-// Раз в `refreshMinutes` минут запускается backend.py: он читает ключ из
-// auth.json, опрашивает сервис и кладёт ответ одной строкой JSON в общий
+// Раз в `refreshMinutes` минут запускается backend.py: он берёт вход из
+// opencode.db, опрашивает консоль и кладёт ответ одной строкой JSON в общий
 // журнал usage.log. Каждый экземпляр виджета (панель, рабочий стол) раз в
-// POL_INTERVAL_MS читает последнюю строку журнала, поэтому обновление,
+// 3 секунды читает последнюю строку журнала, поэтому обновление,
 // нажатое в одном месте, видят все, а отсчёты до сброса не расходятся.
 PlasmoidItem {
     id: root
@@ -27,13 +27,16 @@ PlasmoidItem {
     property string lastPayload: ""
     property string activeSource: ""
 
-    // Процент 5-часового лимита — его показывает компактная версия на панели.
-    readonly property real rollingPercent: (root.usage && root.usage.rolling
-        && typeof root.usage.rolling.percent === "number") ? root.usage.rolling.percent : -1
+    // Процент окна лимита (-1, если данных нет). Дневной показывает
+    // компактная версия на панели, по месячному она выбирает цвет.
+    function windowPercent(name) {
+        var window = root.usage ? root.usage[name] : null
+        return (window && typeof window.percent === "number") ? window.percent : -1
+    }
 
-    // Процент месячного лимита — по нему компактная версия выбирает цвет.
-    readonly property real monthlyPercent: (root.usage && root.usage.monthly
-        && typeof root.usage.monthly.percent === "number") ? root.usage.monthly.percent : -1
+    readonly property real dailyPercent: root.windowPercent("daily")
+    readonly property real monthlyPercent: root.windowPercent("monthly")
+    readonly property color monthlyColor: root.tierColor(Logic.colorTier(root.monthlyPercent))
 
     readonly property string backendScript: root.localPath(Qt.resolvedUrl("../code/backend.py"))
     readonly property string stateDir: root.backendScript.substring(0, root.backendScript.lastIndexOf("/") + 1)
@@ -190,7 +193,7 @@ PlasmoidItem {
 
         onClicked: root.expanded = !root.expanded
 
-        PlasmaComponents.ToolTip.text: Logic.TITLE + " · " + Logic.WINDOW_TITLES.rolling + " · "
+        PlasmaComponents.ToolTip.text: Logic.TITLE + " · " + Logic.WINDOW_TITLES.daily + " · "
             + Logic.statusText(root.lastError, root.updatedAt)
         PlasmaComponents.ToolTip.visible: containsMouse
 
@@ -202,14 +205,14 @@ PlasmoidItem {
 
             Kirigami.Icon {
                 source: Plasmoid.icon || "speedometer"
-                color: root.tierColor(Logic.colorTier(root.monthlyPercent))
+                color: root.monthlyColor
                 Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
                 Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
             }
 
             PlasmaComponents.Label {
-                text: Logic.percentText(root.rollingPercent)
-                color: root.tierColor(Logic.colorTier(root.monthlyPercent))
+                text: Logic.percentText(root.dailyPercent)
+                color: root.monthlyColor
                 font: Kirigami.Theme.smallFont
             }
         }
@@ -255,22 +258,15 @@ PlasmoidItem {
                 }
             }
 
-            UsageBar {
-                Layout.fillWidth: true
-                title: Logic.WINDOW_TITLES.rolling
-                item: root.usage ? root.usage.rolling : null
-            }
+            // Порядок полос: 5 часов, день, неделя, месяц.
+            Repeater {
+                model: ["rolling", "daily", "weekly", "monthly"]
 
-            UsageBar {
-                Layout.fillWidth: true
-                title: Logic.WINDOW_TITLES.weekly
-                item: root.usage ? root.usage.weekly : null
-            }
-
-            UsageBar {
-                Layout.fillWidth: true
-                title: Logic.WINDOW_TITLES.monthly
-                item: root.usage ? root.usage.monthly : null
+                delegate: UsageBar {
+                    Layout.fillWidth: true
+                    title: Logic.WINDOW_TITLES[modelData]
+                    item: root.usage ? root.usage[modelData] : null
+                }
             }
 
             PlasmaComponents.Label {

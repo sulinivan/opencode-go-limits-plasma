@@ -73,8 +73,12 @@ ColumnLayout {
             hoverEnabled: true
             acceptedButtons: Qt.NoButton
 
-            PlasmaComponents.ToolTip.text: Logic.formatResetFull(bar.item ? bar.item.resetsAt : "", bar.nowMs)
-            PlasmaComponents.ToolTip.visible: barHover.containsMouse && bar.percent >= 0
+            // Пустой текст не показываем: иначе при пустом resetsAt
+            // всплывает пустой прямоугольник тултипа.
+            readonly property string resetFullText: Logic.formatResetFull(bar.item ? bar.item.resetsAt : "", bar.nowMs)
+
+            PlasmaComponents.ToolTip.text: barHover.resetFullText
+            PlasmaComponents.ToolTip.visible: barHover.containsMouse && barHover.resetFullText !== ""
         }
     }
 

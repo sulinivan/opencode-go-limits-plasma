@@ -2,7 +2,7 @@
     "KPlugin": {
         "Id": "org.opencode.limits",
         "Name": "OpenCode Go Limits",
-        "Description": "Показывает лимиты OpenCode Go (5 часов / неделя / месяц) прямо на панели или рабочем столе",
+        "Description": "Показывает лимиты OpenCode Go (5 часов / день / неделя / месяц) прямо на панели или рабочем столе",
         "Icon": "speedometer",
         "Category": "System Information",
         "License": "MIT",

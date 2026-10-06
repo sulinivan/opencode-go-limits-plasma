@@ -175,6 +175,149 @@ class CredentialsTests(unittest.TestCase):
         self.assertIn("opencode.db", str(ctx.exception))
 
 
+class FakeResponse:
+    """Подмена ответа urllib: читается как настоящий HTTP-ответ."""
+
+    def __init__(self, payload: object):
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class DailyTests(unittest.TestCase):
+    """Дневное окно берётся с сервера: расход Go с полуночи против нормы."""
+
+    LIMIT = 6_000_000_000
+
+    def run_fetch(self, payload: object, limit: int = LIMIT) -> tuple[dict, str]:
+        """Вызывает fetch_daily_spend с подменённой сетью, возвращает (окно, URL)."""
+        seen = {}
+
+        def fake_urlopen(request, timeout=None):
+            seen["url"] = request.full_url
+            seen["headers"] = dict(request.header_items())
+            return FakeResponse(payload)
+
+        original = backend.urllib.request.urlopen
+        backend.urllib.request.urlopen = fake_urlopen
+        try:
+            return backend.fetch_daily_spend("tok", "wrk_1", "https://x", limit), seen["url"]
+        finally:
+            backend.urllib.request.urlopen = original
+
+    def models(self, *rows: tuple[str, str]) -> dict:
+        return {
+            "items": [
+                {"provider": provider, "model": model, "totalCostMicroCents": cost}
+                for provider, model, cost in rows
+            ]
+        }
+
+    def test_sums_only_go_provider(self):
+        result, _ = self.run_fetch(
+            self.models(
+                ("opencode-go", "qwen", str(self.LIMIT // 31 + 1)),
+                ("opencode", "bunny", "999"),
+            )
+        )
+        self.assertGreaterEqual(result["percent"], 100.0)
+        self.assertEqual(result["status"], "exceeded")
+        self.assertTrue(result["resetsAt"])
+
+    def test_zen_only_is_zero(self):
+        result, _ = self.run_fetch(self.models(("opencode", "bunny", "0")))
+        self.assertEqual(result["percent"], 0.0)
+        self.assertEqual(result["status"], "active")
+
+    def test_overspend_is_shown_as_is(self):
+        result, _ = self.run_fetch(
+            self.models(("opencode-go", "qwen", str(self.LIMIT // 31 * 2)))
+        )
+        self.assertAlmostEqual(result["percent"], 200.0, places=4)
+        self.assertEqual(result["status"], "exceeded")
+
+    def test_empty_models_is_zero(self):
+        result, _ = self.run_fetch({"items": []})
+        self.assertEqual(result["percent"], 0.0)
+
+    def test_since_is_local_midnight_utc(self):
+        _, url = self.run_fetch({"items": []})
+        expected = backend.midnight_utc_iso()
+        self.assertIn("since=" + expected.replace(":", "%3A"), url)
+        self.assertIn("pageSize=100", url)
+
+    def test_auth_headers_are_sent(self):
+        seen = {}
+
+        def fake_urlopen(request, timeout=None):
+            seen.update(dict(request.header_items()))
+            return FakeResponse({"items": []})
+
+        original = backend.urllib.request.urlopen
+        backend.urllib.request.urlopen = fake_urlopen
+        try:
+            backend.fetch_daily_spend("tok", "wrk_1", "https://x", self.LIMIT)
+        finally:
+            backend.urllib.request.urlopen = original
+        authorization = seen.get("Authorization", seen.get("authorization", ""))
+        self.assertEqual(authorization, "Bearer tok")
+
+    def test_broken_payload_raises(self):
+        for payload in ({}, {"items": None}, [], "nope"):
+            with self.assertRaises(backend.UsageError):
+                self.run_fetch(payload)
+
+    def test_http_error_raises(self):
+        import urllib.error
+
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 401, "x", None, None)
+
+        original = backend.urllib.request.urlopen
+        backend.urllib.request.urlopen = fake_urlopen
+        try:
+            with self.assertRaises(backend.UsageError):
+                backend.fetch_daily_spend("tok", "wrk_1", "https://x", self.LIMIT)
+        finally:
+            backend.urllib.request.urlopen = original
+
+    def test_zero_limit_is_zero(self):
+        result, _ = self.run_fetch(self.models(("opencode-go", "qwen", "100")), limit=0)
+        self.assertEqual(result["percent"], 0.0)
+
+    def test_collect_omits_daily_when_models_fail(self):
+        def fake_status(token, org, base):
+            return {
+                "product": "go",
+                "access": {
+                    "meters": {
+                        "month": {"usedMicroCents": "1", "limitMicroCents": "2"},
+                    }
+                },
+            }
+
+        def fake_daily(token, org, base, limit):
+            raise backend.UsageError("нет связи")
+
+        originals = (backend.load_credentials, backend.fetch_status, backend.fetch_daily_spend)
+        backend.load_credentials = lambda: ("t", "o", "https://x", 4102444800000)
+        backend.fetch_status = fake_status
+        backend.fetch_daily_spend = fake_daily
+        try:
+            usage = backend.collect()
+        finally:
+            backend.load_credentials, backend.fetch_status, backend.fetch_daily_spend = originals
+        self.assertIn("monthly", usage)
+        self.assertNotIn("daily", usage)
+
+
 class SharedLogTests(IsolatedState):
     def test_publish_keeps_single_line_and_replaces_it(self):
         backend.publish({"ok": True, "usage": {"rolling": {"percent": 1.0}}})
