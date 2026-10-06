@@ -398,19 +398,39 @@ class CliTests(IsolatedState):
     def test_threshold_crossed_notifies_once_for_all_widgets(self):
         first = self.run_main(["--threshold", "85"], self.sample_usage(90.0))[1]
         second = self.run_main(["--threshold", "85"], self.sample_usage(91.0))[1]
-        self.assertTrue(first["notify"])
+        self.assertEqual(first["notify"], "rolling")
         self.assertFalse(second["notify"])
 
     def test_repeated_notification_is_not_caused_by_resets_at_drift(self):
         drifting = {"rolling": {"percent": 90.0, "status": "ok", "resetsAt": "2026-09-21T10:56:48.051Z"}}
         later = {"rolling": {"percent": 90.0, "status": "ok", "resetsAt": "2026-09-21T10:56:49.845Z"}}
-        self.assertTrue(self.run_main(["--threshold", "85"], drifting)[1]["notify"])
+        self.assertEqual(self.run_main(["--threshold", "85"], drifting)[1]["notify"], "rolling")
         self.assertFalse(self.run_main(["--threshold", "85"], later)[1]["notify"])
 
     def test_new_reset_window_notifies_again(self):
         self.run_main(["--threshold", "85"], {"rolling": {"percent": 90.0, "status": "ok", "resetsAt": "reset-a"}})
         _, document = self.run_main(["--threshold", "85"], {"rolling": {"percent": 90.0, "status": "ok", "resetsAt": "reset-b"}})
-        self.assertTrue(document["notify"])
+        self.assertEqual(document["notify"], "rolling")
+
+    def test_notify_windows_selects_window(self):
+        usage = {
+            "rolling": {"percent": 10.0, "status": "ok", "resetsAt": "reset-a"},
+            "daily": {"percent": 90.0, "status": "ok", "resetsAt": "reset-b"},
+        }
+        _, document = self.run_main(["--threshold", "85", "--notify-windows", "daily"], usage)
+        self.assertEqual(document["notify"], "daily")
+
+    def test_unselected_window_does_not_notify(self):
+        _, document = self.run_main(
+            ["--threshold", "85", "--notify-windows", "daily"], self.sample_usage(90.0)
+        )
+        self.assertNotIn("notify", document)
+
+    def test_unknown_windows_are_ignored(self):
+        _, document = self.run_main(
+            ["--threshold", "85", "--notify-windows", "foo,rolling"], self.sample_usage(90.0)
+        )
+        self.assertEqual(document["notify"], "rolling")
 
     def test_published_log_matches_printed_line(self):
         _, document = self.run_main([], self.sample_usage(5.0))

@@ -9,12 +9,36 @@
             <default>5</default>
         </entry>
         <entry name="notify" type="Bool">
-            <label>Уведомлять о превышении порога 5-часового лимита</label>
+            <label>Уведомлять о превышении порога</label>
             <default>true</default>
+        </entry>
+        <entry name="notifyRolling" type="Bool">
+            <label>Уведомлять: 5 часов</label>
+            <default>true</default>
+        </entry>
+        <entry name="notifyDaily" type="Bool">
+            <label>Уведомлять: день</label>
+            <default>false</default>
+        </entry>
+        <entry name="notifyWeekly" type="Bool">
+            <label>Уведомлять: неделя</label>
+            <default>false</default>
+        </entry>
+        <entry name="notifyMonthly" type="Bool">
+            <label>Уведомлять: месяц</label>
+            <default>false</default>
         </entry>
         <entry name="notifyThreshold" type="Int">
             <label>Порог уведомления, %</label>
             <default>85</default>
+        </entry>
+        <entry name="panelColorSource" type="String">
+            <label>Окно лимита для цвета панели</label>
+            <default>monthly</default>
+        </entry>
+        <entry name="panelValueSource" type="String">
+            <label>Окно лимита для значения на панели</label>
+            <default>daily</default>
         </entry>
     </group>
 </kcfg>

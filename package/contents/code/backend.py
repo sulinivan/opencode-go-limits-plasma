@@ -46,6 +46,10 @@ TIMEOUT_SECONDS = 20
 # Ключи окон лимитов: порядок совпадает с порядком полос в виджете.
 WINDOWS = ("rolling", "weekly", "monthly")
 
+# Порядок проверки уведомлений: те же окна плюс дневное. В WINDOWS дня нет,
+# потому что normalize разбирает счётчики консоли, а день считается отдельно.
+NOTIFY_ORDER = ("rolling", "daily", "weekly", "monthly")
+
 # Как консоль называет каждое окно в ответе.
 METERS = {"rolling": "fiveHour", "weekly": "week", "monthly": "month"}
 
@@ -314,6 +318,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
         help="порог уведомления, %%: один раз на окно сброса, для всех виджетов вместе",
     )
+    parser.add_argument(
+        "--notify-windows",
+        default="rolling",
+        metavar="LIST",
+        help="окна для уведомлений через запятую (rolling,daily,weekly,monthly)",
+    )
     args = parser.parse_args(argv)
 
     if args.test:
@@ -322,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
         except UsageError as exc:
             print("FAIL: " + str(exc))
             return 1
-        for name in ("rolling", "daily", "weekly", "monthly"):
+        for name in NOTIFY_ORDER:
             item = usage.get(name)
             if item:
                 print(f"{name:<8} {item['percent']:>5.0f}%  status={item['status']:<8} resets {item['resetsAt'] or '—'}")
@@ -337,9 +347,22 @@ def main(argv: list[str] | None = None) -> int:
         document.update(ok=False, error=f"внутренняя ошибка: {exc}")
     else:
         document.update(ok=True, usage=usage)
-        rolling = usage.get("rolling")
-        if args.threshold is not None and rolling and rolling["percent"] >= args.threshold:
-            document["notify"] = claim(window_key(rolling["resetsAt"], args.threshold))
+        if args.threshold is not None:
+            wanted = {
+                name.strip()
+                for name in (args.notify_windows or "").split(",")
+                if name.strip() in NOTIFY_ORDER
+            }
+            for name in NOTIFY_ORDER:
+                window = usage.get(name)
+                if name in wanted and window and window["percent"] >= args.threshold:
+                    # Имя окна вместо bool: виджет покажет, какое окно сработало.
+                    # False сохраняем для совместимости со старыми виджетами.
+                    if claim(window_key(window["resetsAt"], args.threshold)):
+                        document["notify"] = name
+                    else:
+                        document["notify"] = False
+                    break
 
     publish(document)
     print(json.dumps(document, ensure_ascii=False, separators=(",", ":")))

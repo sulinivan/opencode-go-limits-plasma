@@ -34,16 +34,35 @@ PlasmoidItem {
         return (window && typeof window.percent === "number") ? window.percent : -1
     }
 
-    readonly property real dailyPercent: root.windowPercent("daily")
-    readonly property real monthlyPercent: root.windowPercent("monthly")
-    readonly property color monthlyColor: root.tierColor(Logic.colorTier(root.monthlyPercent))
+    // Окна для цифры и цвета панели выбираются в настройках.
+    readonly property string panelTitle: Logic.WINDOW_TITLES[Plasmoid.configuration.panelValueSource]
+        || Logic.WINDOW_TITLES.daily
+    readonly property color panelColor: root.tierColor(
+        Logic.colorTier(root.windowPercent(Plasmoid.configuration.panelColorSource)))
 
     readonly property string backendScript: root.localPath(Qt.resolvedUrl("../code/backend.py"))
     readonly property string stateDir: root.backendScript.substring(0, root.backendScript.lastIndexOf("/") + 1)
     readonly property string usageLog: root.stateDir + "usage.log"
 
+    // Окна для уведомлений через запятую: те, чьи галочки стоят в настройках.
+    function notifyWindowList() {
+        var list = []
+        if (Plasmoid.configuration.notifyRolling)
+            list.push("rolling")
+        if (Plasmoid.configuration.notifyDaily)
+            list.push("daily")
+        if (Plasmoid.configuration.notifyWeekly)
+            list.push("weekly")
+        if (Plasmoid.configuration.notifyMonthly)
+            list.push("monthly")
+        return list.join(",")
+    }
+
     readonly property string fetchCommand: "/usr/bin/env python3 '" + root.backendScript + "'"
-        + (Plasmoid.configuration.notify ? " --threshold " + Plasmoid.configuration.notifyThreshold : "")
+        + (Plasmoid.configuration.notify
+            ? " --threshold " + Plasmoid.configuration.notifyThreshold
+                + " --notify-windows " + root.notifyWindowList()
+            : "")
     readonly property string pollCommand: "tail -n 1 '" + root.usageLog + "'"
 
     function localPath(url) {
@@ -94,17 +113,20 @@ PlasmoidItem {
         if (document.ok) {
             root.usage = document.usage || null
             root.lastError = ""
-            if (!fromPoll && document.notify === true)
-                root.sendNotification()
+            if (!fromPoll && typeof document.notify === "string")
+                root.sendNotification(document.notify)
         } else {
             root.lastError = document.error || "неизвестная ошибка"
         }
         return true
     }
 
-    function sendNotification() {
-        notifier.title = "OpenCode Go — 5-часовой лимит"
-        notifier.text = Logic.notifyBody(root.usage.rolling, Plasmoid.configuration.notifyThreshold, Date.now())
+    function sendNotification(windowName) {
+        var item = root.usage ? root.usage[windowName] : null
+        if (!item)
+            return
+        notifier.title = "OpenCode Go — " + (Logic.WINDOW_TITLES[windowName] || windowName)
+        notifier.text = Logic.notifyBody(item, Plasmoid.configuration.notifyThreshold, Date.now())
         notifier.iconName = Plasmoid.icon || "speedometer"
         notifier.sendEvent()
     }
@@ -193,7 +215,7 @@ PlasmoidItem {
 
         onClicked: root.expanded = !root.expanded
 
-        PlasmaComponents.ToolTip.text: Logic.TITLE + " · " + Logic.WINDOW_TITLES.daily + " · "
+        PlasmaComponents.ToolTip.text: Logic.TITLE + " · " + root.panelTitle + " · "
             + Logic.statusText(root.lastError, root.updatedAt)
         PlasmaComponents.ToolTip.visible: containsMouse
 
@@ -205,14 +227,14 @@ PlasmoidItem {
 
             Kirigami.Icon {
                 source: Plasmoid.icon || "speedometer"
-                color: root.monthlyColor
+                color: root.panelColor
                 Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
                 Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
             }
 
             PlasmaComponents.Label {
-                text: Logic.percentText(root.dailyPercent)
-                color: root.monthlyColor
+                text: Logic.percentText(root.windowPercent(Plasmoid.configuration.panelValueSource))
+                color: root.panelColor
                 font: Kirigami.Theme.smallFont
             }
         }
