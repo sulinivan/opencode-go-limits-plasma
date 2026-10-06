@@ -249,7 +249,7 @@ class DailyTests(unittest.TestCase):
 
     def test_since_is_local_midnight_utc(self):
         _, url = self.run_fetch({"items": []})
-        expected = backend.midnight_utc_iso()
+        expected = backend.day_bounds()[1]
         self.assertIn("since=" + expected.replace(":", "%3A"), url)
         self.assertIn("pageSize=100", url)
 

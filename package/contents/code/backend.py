@@ -132,15 +132,16 @@ def message_for_http_status(code: int) -> str:
     return f"консоль ответила ошибкой {code}"
 
 
-def fetch_status(
+def console_get(
+    path: str,
     token: str,
     org: str,
-    base: str = "https://opencode.ai/console",
+    base: str,
     timeout: int = TIMEOUT_SECONDS,
 ) -> dict:
-    """GET <console>/api/go/status с токеном входа и заголовком x-org-id."""
+    """GET к консоли: авторизация, разбор JSON и тексты ошибок — в одном месте."""
     request = urllib.request.Request(
-        base + "/api/go/status",
+        base + path,
         headers={
             "Authorization": "Bearer " + token,
             "x-org-id": org,
@@ -159,6 +160,16 @@ def fetch_status(
         raise UsageError("таймаут запроса к консоли") from exc
     except ValueError as exc:
         raise UsageError(MSG_BAD_RESPONSE) from exc
+
+
+def fetch_status(
+    token: str,
+    org: str,
+    base: str = "https://opencode.ai/console",
+    timeout: int = TIMEOUT_SECONDS,
+) -> dict:
+    """Окна лимитов Go: GET <console>/api/go/status."""
+    return console_get("/api/go/status", token, org, base, timeout)
 
 
 def normalize(payload: object) -> dict:
@@ -186,19 +197,13 @@ def normalize(payload: object) -> dict:
     return result
 
 
-def midnight_iso() -> str:
-    """Ближайшая полночь в локальном ISO: сброс дневного окна."""
-    now = time.localtime()
-    midnight = time.mktime((now.tm_year, now.tm_mon, now.tm_mday + 1, 0, 0, 0, 0, 0, -1))
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(midnight))
-
-
-def midnight_utc_iso() -> str:
-    """Местная полночь в UTC ISO: начало сегодняшнего дня для консоли."""
-    local_midnight = datetime.datetime.now().astimezone().replace(
-        hour=0, minute=0, second=0, microsecond=0
+def day_bounds() -> tuple[str, str]:
+    """Границы суток: сброс окна в локальном ISO и начало дня в UTC ISO для консоли."""
+    today = datetime.datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (
+        (today + datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+        today.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
-    return local_midnight.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def fetch_daily_spend(
@@ -214,29 +219,11 @@ def fetch_daily_spend(
     Процент от дневной нормы (лимит месяца / 31) не ограничен сверху:
     перерасход показывается как есть (137%, 200%, ...).
     """
+    reset_at, since = day_bounds()
     query = urllib.parse.urlencode(
-        {"since": midnight_utc_iso(), "pageSize": 100}  # моделей за день — единицы
+        {"since": since, "pageSize": 100}  # моделей за день — единицы
     )
-    request = urllib.request.Request(
-        base + "/api/usage/models?" + query,
-        headers={
-            "Authorization": "Bearer " + token,
-            "x-org-id": org,
-            "User-Agent": USER_AGENT,
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise UsageError(message_for_http_status(exc.code)) from exc
-    except urllib.error.URLError as exc:
-        raise UsageError(f"нет связи с консолью: {exc.reason}") from exc
-    except TimeoutError as exc:
-        raise UsageError("таймаут запроса к консоли") from exc
-    except ValueError as exc:
-        raise UsageError(MSG_BAD_RESPONSE) from exc
+    payload = console_get("/api/usage/models?" + query, token, org, base, timeout)
 
     items = payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(items, list):
@@ -251,7 +238,7 @@ def fetch_daily_spend(
     return {
         "percent": percent,
         "status": "exceeded" if percent >= 100 else "active",
-        "resetsAt": midnight_iso(),
+        "resetsAt": reset_at,
     }
 
 
