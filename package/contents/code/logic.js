@@ -64,20 +64,21 @@ function resetMoment(iso, nowMs) {
 
     return {
         relative: relative,
+        day: pad2(moment.getDate()) + "." + pad2(moment.getMonth() + 1),
         clock: pad2(moment.getHours()) + ":" + pad2(moment.getMinutes()),
         full: pad2(moment.getDate()) + "." + pad2(moment.getMonth() + 1) + "." + moment.getFullYear()
             + " " + pad2(moment.getHours()) + ":" + pad2(moment.getMinutes()) + ":" + pad2(moment.getSeconds())
     }
 }
 
-// "сброс через 2 ч 5 мин · 14:30" — как в оригинальном виджете.
+// "сброс через 2 ч 5 мин · 07.10 14:30": дата короткая, без года.
 function formatReset(iso, nowMs) {
     var moment = resetMoment(iso, nowMs)
     if (!moment)
         return ""
     if (moment.relative === "сброс сейчас")
         return moment.relative
-    return "сброс через " + moment.relative + " · " + moment.clock
+    return "сброс через " + moment.relative + " · " + moment.day + " " + moment.clock
 }
 
 function formatResetFull(iso, nowMs) {

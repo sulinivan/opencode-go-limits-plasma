@@ -38,13 +38,19 @@ assert.strictEqual(logic.formatReset("не дата", now), "");
 assert.strictEqual(logic.formatReset(inHours(-1), now), "сброс сейчас");
 
 const inMinutes = logic.formatReset(new Date(now + 40 * 60 * 1000).toISOString(), now);
-assert.match(inMinutes, /^сброс через 40 мин · \d\d:\d\d$/);
+assert.match(inMinutes, /^сброс через 40 мин · \d\d\.\d\d \d\d:\d\d$/);
 
 const inHoursText = logic.formatReset(inHours(5), now);
-assert.match(inHoursText, /^сброс через 5 ч 0 мин · \d\d:\d\d$/);
+assert.match(inHoursText, /^сброс через 5 ч 0 мин · \d\d\.\d\d \d\d:\d\d$/);
 
 const inDaysText = logic.formatReset(inHours(49), now);
-assert.match(inDaysText, /^сброс через 2 д 1 ч · \d\d:\d\d$/);
+assert.match(inDaysText, /^сброс через 2 д 1 ч · \d\d\.\d\d \d\d:\d\d$/);
+
+// Дата в подписи совпадает с датой resetsAt.
+const resetDate = new Date(now + 49 * 3600 * 1000);
+const pad2 = (value) => (value < 10 ? "0" + value : String(value));
+const expectedDay = pad2(resetDate.getDate()) + "." + pad2(resetDate.getMonth() + 1);
+assert.strictEqual(inDaysText.split(" · ")[1].split(" ")[0], expectedDay);
 
 assert.match(logic.formatResetFull(inHours(5), now), /^точное время сброса: \d\d\.\d\d\.\d{4} \d\d:\d\d:\d\d$/);
 
@@ -66,7 +72,7 @@ assert.strictEqual(logic.statusText("x".repeat(100), "12:34:56").length, 63);
 // --- текст уведомления ------------------------------------------------------
 assert.match(
     logic.notifyBody({ percent: 91.2, resetsAt: inHours(3) }, 85, now),
-    /^Использовано 91% \(порог 85%\)\. сброс через 3 ч 0 мин · \d\d:\d\d\. Отключить можно в настройках\.$/
+    /^Использовано 91% \(порог 85%\)\. сброс через 3 ч 0 мин · \d\d\.\d\d \d\d:\d\d\. Отключить можно в настройках\.$/
 );
 
 // --- разбор ответа backend --------------------------------------------------
